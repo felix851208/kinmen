@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>金門國樂傳承計畫《大師領航》專場音樂會</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-tap-highlight-color: transparent;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background-color: #071126;
+      background-image: radial-gradient(circle at 50% 45%, #112652 0%, #060e20 75%, #030812 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    /* 極簡載入光圈 */
+    .loader-ring {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 40;
+      pointer-events: none;
+      transition: opacity 0.35s ease;
+    }
+
+    .loader-ring.hidden {
+      opacity: 0;
+    }
+
+    .spinner {
+      width: 40px;
+      height: 40px;
+      border: 3px solid rgba(255, 212, 82, 0.2);
+      border-top-color: #FFD452;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    /* 電子書舞台 */
+    .book-stage {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      perspective: 2400px;
+      opacity: 0;
+      transition: opacity 0.4s ease;
+      padding: 12px;
+    }
+
+    .book-stage.ready {
+      opacity: 1;
+    }
+
+    .book-container {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transform-style: preserve-3d;
+      box-shadow: 0 26px 65px rgba(0, 0, 0, 0.72), 0 8px 20px rgba(0, 0, 0, 0.45);
+      border-radius: 4px;
+      cursor: pointer;
+    }
+
+    /* 單頁插槽 */
+    .page-slot {
+      position: relative;
+      height: 100%;
+      background-color: #0b1938;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .page-slot.left-slot {
+      border-radius: 4px 0 0 4px;
+      box-shadow: inset -12px 0 22px -10px rgba(0, 0, 0, 0.48);
+    }
+
+    .page-slot.right-slot {
+      border-radius: 0 4px 4px 0;
+      box-shadow: inset 12px 0 22px -10px rgba(0, 0, 0, 0.48);
+    }
+
+    .page-slot.single-slot {
+      border-radius: 4px;
+    }
+
+    .page-slot.empty-slot {
+      background: transparent;
+      box-shadow: none;
+    }
+
+    .page-slot img {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      pointer-events: none;
+    }
+
+    /* 書脊中線 */
+    .spine-line {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 50%;
+      width: 2px;
+      transform: translateX(-50%);
+      background: linear-gradient(90deg, rgba(0,0,0,0.45), rgba(255,255,255,0.08), rgba(0,0,0,0.45));
+      z-index: 15;
+      pointer-events: none;
+    }
+
+    /* 3D 翻頁動畫層 */
+    .flip-leaf {
+      position: absolute;
+      top: 0;
+      height: 100%;
+      transform-style: preserve-3d;
+      z-index: 25;
+      pointer-events: none;
+      transition: transform 0.62s cubic-bezier(0.28, 0.08, 0.25, 1);
+    }
+
+    .flip-face {
+      position: absolute;
+      inset: 0;
+      backface-visibility: hidden;
+      -webkit-backface-visibility: hidden;
+      overflow: hidden;
+      background-color: #0b1938;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .flip-face.back {
+      transform: rotateY(180deg);
+    }
+
+    .flip-face img {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- 載入時極簡光圈 -->
+  <div id="loaderRing" class="loader-ring">
+    <div class="spinner"></div>
+  </div>
+
+  <!-- 電子節目單書冊容器 -->
+  <div id="bookStage" class="book-stage">
+    <div id="bookContainer" class="book-container"></div>
+  </div>
+
+  <script>
+    // 節目單總頁數（自動讀取同資料夾的 1.jpg ~ 20.jpg，亦自動相容 iLovePDF 預設檔名）
+    const TOTAL_PAGES = 20;
+
+    const loaderRing = document.getElementById('loaderRing');
+    const bookStage = document.getElementById('bookStage');
+    const bookContainer = document.getElementById('bookContainer');
+
+    let pageUrls = [];
+    let totalPages = 0;
+    let currentPage = 1;
+    let pageAspectRatio = 0.707; // 預設 A4 比例，載入第 1 頁後自動校正為原圖比例
+    let isDualMode = window.innerWidth >= 768;
+    let isAnimating = false;
+
+    // 探測單張圖片是否存在並取得真實比例
+    function probeImage(candidates) {
+      return new Promise((resolve) => {
+        let idx = 0;
+        function tryNext() {
+          if (idx >= candidates.length) {
+            resolve(null);
+            return;
+          }
+          const url = candidates[idx++];
+          const img = new Image();
+          img.onload = () => resolve({ url, width: img.naturalWidth, height: img.naturalHeight });
+          img.onerror = tryNext;
+          img.src = url;
+        }
+        tryNext();
+      });
+    }
+
+    // 預載鄰近頁面圖片，確保翻頁零延遲
+    function preloadNeighborImages(centerPage) {
+      for (let p = centerPage - 2; p <= centerPage + 3; p++) {
+        if (p >= 1 && p <= totalPages && pageUrls[p - 1]) {
+          const pre = new Image();
+          pre.src = pageUrls[p - 1];
+        }
+      }
+    }
+
+    // 初始化並自動掃描同資料夾內的節目單圖片
+    async function initImageBook() {
+      const firstProbe = await probeImage([
+        './1.jpg', './01.jpg', './1.jpeg', './1.png', './01.png',
+        './page-0001.jpg', './節目冊縮小_page-0001.jpg', './program_page-0001.jpg'
+      ]);
+      if (!firstProbe) return;
+
+      if (firstProbe.width && firstProbe.height) {
+        pageAspectRatio = firstProbe.width / firstProbe.height;
+      }
+
+      const detected = [firstProbe.url];
+      for (let i = 2; i <= TOTAL_PAGES; i++) {
+        const pad2 = String(i).padStart(2, '0');
+        const pad4 = String(i).padStart(4, '0');
+        const res = await probeImage([
+          `./${i}.jpg`, `./${pad2}.jpg`, `./${i}.jpeg`, `./${i}.png`, `./${pad2}.png`,
+          `./page-${pad4}.jpg`, `./節目冊縮小_page-${pad4}.jpg`, `./program_page-${pad4}.jpg`
+        ]);
+        if (res) {
+          detected.push(res.url);
+        } else {
+          break;
+        }
+      }
+
+      pageUrls = detected;
+      totalPages = detected.length;
+      currentPage = 1;
+
+      updateBookDimensions();
+      renderCurrentSpread();
+
+      loaderRing.classList.add('hidden');
+      bookStage.classList.add('ready');
+    }
+
+    // 依據視窗尺寸與圖片比例計算最適書冊大小
+    function updateBookDimensions() {
+      if (!totalPages) return;
+      isDualMode = window.innerWidth >= 768;
+
+      const maxW = window.innerWidth - 24;
+      const maxH = window.innerHeight - 24;
+      const spreadAspect = isDualMode ? pageAspectRatio * 2 : pageAspectRatio;
+
+      let bookW = maxW;
+      let bookH = bookW / spreadAspect;
+
+      if (bookH > maxH) {
+        bookH = maxH;
+        bookW = bookH * spreadAspect;
+      }
+
+      bookContainer.style.width = `${Math.floor(bookW)}px`;
+      bookContainer.style.height = `${Math.floor(bookH)}px`;
+    }
+
+    // 建立單頁元素
+    function createPageElement(pageNum, slotClass) {
+      const slot = document.createElement('div');
+      slot.className = `page-slot ${slotClass}`;
+      slot.style.width = isDualMode ? '50%' : '100%';
+
+      if (!pageNum || pageNum < 1 || pageNum > totalPages) {
+        slot.classList.add('empty-slot');
+        return slot;
+      }
+
+      const img = document.createElement('img');
+      img.src = pageUrls[pageNum - 1];
+      img.alt = '';
+      slot.appendChild(img);
+      return slot;
+    }
+
+    // 渲染目前頁面或對開雙頁
+    function renderCurrentSpread() {
+      if (!totalPages) return;
+      bookContainer.innerHTML = '';
+
+      if (!isDualMode) {
+        bookContainer.appendChild(createPageElement(currentPage, 'single-slot'));
+      } else {
+        let leftNum = null;
+        let rightNum = null;
+
+        if (currentPage === 1) {
+          rightNum = 1;
+        } else {
+          const evenLeft = currentPage % 2 === 0 ? currentPage : currentPage - 1;
+          leftNum = evenLeft;
+          rightNum = evenLeft + 1 <= totalPages ? evenLeft + 1 : null;
+        }
+
+        bookContainer.appendChild(createPageElement(leftNum, 'left-slot'));
+        bookContainer.appendChild(createPageElement(rightNum, 'right-slot'));
+
+        if (leftNum && rightNum) {
+          const spine = document.createElement('div');
+          spine.className = 'spine-line';
+          bookContainer.appendChild(spine);
+        }
+      }
+
+      preloadNeighborImages(currentPage);
+    }
+
+    // 往後翻頁
+    function flipNext() {
+      if (!totalPages || isAnimating) return;
+
+      if (!isDualMode) {
+        if (currentPage >= totalPages) return;
+        const fromPage = currentPage;
+        const toPage = currentPage + 1;
+        runSingleFlipAnimation(fromPage, toPage, 'next');
+      } else {
+        const currentRight = currentPage === 1 ? 1 : (currentPage % 2 === 0 ? currentPage + 1 : currentPage);
+        if (!currentRight || currentRight >= totalPages) return;
+
+        const nextLeft = currentRight + 1;
+        const nextRight = nextLeft + 1 <= totalPages ? nextLeft + 1 : null;
+        runDualFlipAnimation(currentRight, nextLeft, nextRight, 'next');
+      }
+    }
+
+    // 往前翻頁
+    function flipPrev() {
+      if (!totalPages || isAnimating) return;
+
+      if (!isDualMode) {
+        if (currentPage <= 1) return;
+        const fromPage = currentPage;
+        const toPage = currentPage - 1;
+        runSingleFlipAnimation(fromPage, toPage, 'prev');
+      } else {
+        if (currentPage <= 1) return;
+        const currentLeft = currentPage % 2 === 0 ? currentPage : currentPage - 1;
+        if (currentLeft <= 2) {
+          runDualFlipAnimation(2, 1, null, 'prev');
+        } else {
+          const prevRight = currentLeft - 1;
+          const prevLeft = prevRight - 1;
+          runDualFlipAnimation(currentLeft, prevRight, prevLeft, 'prev');
+        }
+      }
+    }
+
+    // 手機單頁 3D 翻頁動畫
+    function runSingleFlipAnimation(fromPage, toPage, direction) {
+      isAnimating = true;
+      currentPage = toPage;
+
+      bookContainer.innerHTML = '';
+      bookContainer.appendChild(createPageElement(toPage, 'single-slot'));
+
+      const leaf = document.createElement('div');
+      leaf.className = 'flip-leaf';
+      leaf.style.width = '100%';
+      leaf.style.left = '0';
+      leaf.style.transformOrigin = direction === 'next' ? 'left center' : 'right center';
+
+      const front = document.createElement('div');
+      front.className = 'flip-face front';
+      const frontImg = document.createElement('img');
+      frontImg.src = pageUrls[fromPage - 1];
+      front.appendChild(frontImg);
+
+      leaf.appendChild(front);
+      bookContainer.appendChild(leaf);
+
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          leaf.style.transform = direction === 'next' ? 'rotateY(-180deg)' : 'rotateY(180deg)';
+        });
+      });
+
+      setTimeout(() => {
+        isAnimating = false;
+        renderCurrentSpread();
+      }, 630);
+    }
+
+    // 電腦雙頁對開 3D 翻頁動畫
+    function runDualFlipAnimation(frontPage, backPage, revealedSidePage, direction) {
+      isAnimating = true;
+
+      const leaf = document.createElement('div');
+      leaf.className = 'flip-leaf';
+      leaf.style.width = '50%';
+
+      if (direction === 'next') {
+        leaf.style.left = '50%';
+        leaf.style.transformOrigin = 'left center';
+
+        const slots = bookContainer.querySelectorAll('.page-slot');
+        if (slots[1]) {
+          slots[1].innerHTML = '';
+          if (revealedSidePage && revealedSidePage <= totalPages) {
+            slots[1].classList.remove('empty-slot');
+            const img = document.createElement('img');
+            img.src = pageUrls[revealedSidePage - 1];
+            slots[1].appendChild(img);
+          } else {
+            slots[1].classList.add('empty-slot');
+          }
+        }
+      } else {
+        leaf.style.left = '0';
+        leaf.style.transformOrigin = 'right center';
+
+        const slots = bookContainer.querySelectorAll('.page-slot');
+        if (slots[0]) {
+          slots[0].innerHTML = '';
+          if (revealedSidePage && revealedSidePage >= 1) {
+            slots[0].classList.remove('empty-slot');
+            const img = document.createElement('img');
+            img.src = pageUrls[revealedSidePage - 1];
+            slots[0].appendChild(img);
+          } else {
+            slots[0].classList.add('empty-slot');
+          }
+        }
+      }
+
+      const frontFace = document.createElement('div');
+      frontFace.className = 'flip-face front';
+      const fImg = document.createElement('img');
+      fImg.src = pageUrls[frontPage - 1];
+      frontFace.appendChild(fImg);
+
+      const backFace = document.createElement('div');
+      backFace.className = 'flip-face back';
+      const bImg = document.createElement('img');
+      bImg.src = pageUrls[backPage - 1];
+      backFace.appendChild(bImg);
+
+      leaf.appendChild(frontFace);
+      leaf.appendChild(backFace);
+      bookContainer.appendChild(leaf);
+
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          leaf.style.transform = direction === 'next' ? 'rotateY(-180deg)' : 'rotateY(180deg)';
+        });
+      });
+
+      setTimeout(() => {
+        if (direction === 'next') {
+          currentPage = backPage;
+        } else {
+          currentPage = backPage === 1 ? 1 : revealedSidePage;
+        }
+        isAnimating = false;
+        renderCurrentSpread();
+      }, 630);
+    }
+
+    // 點擊書頁左右兩側翻頁
+    bookContainer.addEventListener('click', (e) => {
+      if (!totalPages || isAnimating) return;
+      const rect = bookContainer.getBoundingClientRect();
+      const clickX = e.clientX - rect.left;
+      if (clickX >= rect.width * 0.5) {
+        flipNext();
+      } else {
+        flipPrev();
+      }
+    });
+
+    // 手機觸控左右滑動翻頁
+    let touchStartX = 0;
+    let touchStartY = 0;
+
+    bookStage.addEventListener('touchstart', (e) => {
+      if (e.touches.length === 1) {
+        touchStartX = e.touches[0].clientX;
+        touchStartY = e.touches[0].clientY;
+      }
+    }, { passive: true });
+
+    bookStage.addEventListener('touchend', (e) => {
+      if (!totalPages || isAnimating || e.changedTouches.length !== 1) return;
+      const dx = e.changedTouches[0].clientX - touchStartX;
+      const dy = e.changedTouches[0].clientY - touchStartY;
+
+      if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy)) {
+        if (dx < 0) {
+          flipNext();
+        } else {
+          flipPrev();
+        }
+      }
+    }, { passive: true });
+
+    // 鍵盤左右方向鍵翻頁
+    window.addEventListener('keydown', (e) => {
+      if (!totalPages) return;
+      if (e.key === 'ArrowRight') {
+        flipNext();
+      } else if (e.key === 'ArrowLeft') {
+        flipPrev();
+      }
+    });
+
+    // 視窗尺寸變動時自動重算書冊尺寸
+    let resizeTimer = null;
+    window.addEventListener('resize', () => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        if (!totalPages) return;
+        const wasDual = isDualMode;
+        updateBookDimensions();
+        if (wasDual !== isDualMode) {
+          renderCurrentSpread();
+        }
+      }, 150);
+    });
+
+    // 網頁載入後立即自動讀取圖片
+    window.addEventListener('DOMContentLoaded', () => {
+      initImageBook();
+    });
+  </script>
+</body>
+</html>
